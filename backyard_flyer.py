@@ -7,7 +7,9 @@ import numpy as np
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection, WebSocketConnection  # noqa: F401
 from udacidrone.messaging import MsgID
-
+from udacidrone.frame_utils import global_to_local
+import time
+from enum import IntEnum
 
 class States(Enum):
     MANUAL = 0
@@ -17,6 +19,10 @@ class States(Enum):
     LANDING = 4
     DISARMING = 5
 
+class Positions(IntEnum):
+    LONGITUDE=0
+    LATITUDE=1
+    ALTITUDE=2
 
 class BackyardFlyer(Drone):
 
@@ -33,7 +39,7 @@ class BackyardFlyer(Drone):
         # TODO: Register all your callbacks here
         self.register_callback(MsgID.LOCAL_POSITION, self.local_position_callback)
         self.register_callback(MsgID.LOCAL_VELOCITY, self.velocity_callback)
-        self.register_callback(MsgID.STATE, self.state_callback)
+        self.register_callback(MsgID.STATE, self.state_callback) #changes in either armed or guided
 
     def local_position_callback(self):
         """
@@ -41,7 +47,15 @@ class BackyardFlyer(Drone):
 
         This triggers when `MsgID.LOCAL_POSITION` is received and self.local_position contains new data
         """
-        pass
+        local_position = global_to_local(self.local_position,self.global_home)
+        if self.flight_state == States.TAKEOFF:
+            if local_position[Positions.ALTITUDE] > 0.95 * self.target_position[Positions.ALTITUDE]:            
+                print("@burke",local_position,self.target_position)
+                self.landing_transition()
+        elif self.flight_state == States.LANDING:
+            if local_position[Positions.ALTITUDE]<0.01:
+                self.disarming_transition()
+
 
     def velocity_callback(self):
         """
@@ -49,6 +63,9 @@ class BackyardFlyer(Drone):
 
         This triggers when `MsgID.LOCAL_VELOCITY` is received and self.local_velocity contains new data
         """
+        #print("velocity_callback called")
+        # print("attitude:",self.attitude)
+        # print("gyro_raw:",self.gyro_raw)
         pass
 
     def state_callback(self):
@@ -57,7 +74,15 @@ class BackyardFlyer(Drone):
 
         This triggers when `MsgID.STATE` is received and self.armed and self.guided contain new data
         """
-        pass
+        if self.in_mission:
+            if self.flight_state == States.MANUAL:
+                self.arming_transition()
+            elif self.flight_state == States.ARMING:
+                if self.armed and self.guided:
+                    self.takeoff_transition()
+            elif self.flight_state == States.DISARMING:
+                if not self.armed:
+                    self.manual_transition()
 
     def calculate_box(self):
         """TODO: Fill out this method
@@ -75,6 +100,11 @@ class BackyardFlyer(Drone):
         4. Transition to the ARMING state
         """
         print("arming transition")
+        self.take_control()
+        if not self.armed:
+            self.arm()
+        self.set_home_position(self.global_position[0],self.global_position[1],self.global_position[2])
+        self.flight_state = States.ARMING
 
     def takeoff_transition(self):
         """TODO: Fill out this method
@@ -84,6 +114,10 @@ class BackyardFlyer(Drone):
         3. Transition to the TAKEOFF state
         """
         print("takeoff transition")
+        target_altitude = 3.0
+        self.target_position[Positions.ALTITUDE] = target_altitude
+        self.takeoff(target_altitude)
+        self.flight_state = States.TAKEOFF
 
     def waypoint_transition(self):
         """TODO: Fill out this method
@@ -100,6 +134,9 @@ class BackyardFlyer(Drone):
         2. Transition to the LANDING state
         """
         print("landing transition")
+        self.land()
+        self.flight_state = States.LANDING
+
 
     def disarming_transition(self):
         """TODO: Fill out this method
@@ -107,7 +144,10 @@ class BackyardFlyer(Drone):
         1. Command the drone to disarm
         2. Transition to the DISARMING state
         """
-        print("disarm transition")
+        print("disarm transition",self.armed)
+        if self.armed:
+            self.disarm()
+        self.flight_state = States.DISARMING
 
     def manual_transition(self):
         """This method is provided
